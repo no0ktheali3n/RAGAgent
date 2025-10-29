@@ -1,122 +1,130 @@
 """
 indexer.py — builds and persists a local vector index
-using Hugging Face embeddings + Chroma vector store.
+using Hugging Face embeddings + a Chroma vector store.
+
+This module is intentionally limited to:
+  - Loading source documents
+  - Chunking/splitting
+  - Embedding + persisting to Chroma
+  - Returning objects needed for validation
+
 """
+
 import os
 import bs4
 from dotenv import load_dotenv
+
 load_dotenv()
 
-from langchain.agents import AgentState, create_agent
 from langchain_community.document_loaders import WebBaseLoader
-from langchain.messages import MessageLikeRepresentation
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
-from langchain.tools import tool
+from langchain_core.documents import Document
 
 
-# ------------------------------------------------------------
-# CONFIGURATION - pull from env with defaults
-# ------------------------------------------------------------
-embed_model = os.getenv("EMBED_MODEL", "BAAI/bge-small-en-v1.5")
-embed_model_ns = f"{embed_model}".replace("/","_") #for chroma dir namespace
-collection = os.getenv("COLLECTION", "RAGAgent_tutorial")
-base_chroma_dir = os.getenv("CHROMA_DIR", "./data/chroma")
-chroma_dir = f"{base_chroma_dir}/{collection}_{embed_model_ns}" #uses cleaned embed model
-user_agent = os.getenv("USER_AGENT", "RAGAgent/0.1")
+# -------------------- CONFIG --------------------
+EMBED_MODEL_ID = os.getenv("EMBED_MODEL", "BAAI/bge-small-en-v1.5")  # Real HF model id
+EMBED_MODEL_NS = EMBED_MODEL_ID.replace("/", "_")                    # FS-safe suffix
+COLLECTION     = os.getenv("COLLECTION", "RAGAgent_tutorial")
+BASE_CHROMA    = os.getenv("CHROMA_DIR", "./data/chroma")
+CHROMA_DIR     = f"{BASE_CHROMA}/{COLLECTION}_{EMBED_MODEL_NS}"
+USER_AGENT     = os.getenv("USER_AGENT", "RAGAgent/0.1")
 
-# ------------------------------------------------------------
-# CORE INDEXING FUNCTION
-# ------------------------------------------------------------
-def build_index():
-    """Loads, chunks, embeds, and persists the article into Chroma."""
-    print("🚀 Starting index build...")
+SOURCE_URLS: list[str] = [
+    "https://lilianweng.github.io/posts/2023-06-23-agent/",
+]
 
-    # Step 1. Embeddings setup
-    embeddings = HuggingFaceEmbeddings(
-        model_name=embed_model,
+print(f"[cfg] EMBED_MODEL_ID={EMBED_MODEL_ID}")
+print(f"[cfg] CHROMA_DIR={CHROMA_DIR}")
+
+# -------------------- PRIVATE HELPERS --------------------
+def _load_docs() -> list[Document]:
+    """Load source documents with explicit headers to avoid 403s."""
+    loader = WebBaseLoader(
+        web_paths=tuple(SOURCE_URLS),
+        requests_kwargs={"headers": {"User-Agent": USER_AGENT}},
+        bs_kwargs=dict(parse_only=bs4.SoupStrainer(class_=("post-content", "post-title", "post-header"))),
+    )
+    docs = loader.load()
+    # For this tutorial we expect a single long article; assert to surface surprises early.
+    assert len(docs) == 1, f"Expected one document, got {len(docs)}"
+    return docs
+
+def _split_docs(docs: list[Document]) -> list[Document]:
+    """Split into overlapping chunks and enrich metadata for traceability."""
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1000, chunk_overlap=200, add_start_index=True
+    )
+    splits = splitter.split_documents(docs)
+
+    for i, d in enumerate(splits):
+        d.metadata = {
+            **d.metadata,
+            "collection": COLLECTION,
+            "chunk_index": i,
+            "char_start": d.metadata.get("start_index"),
+            # You can optionally preserve source URL/title if present in loader metadata:
+            # "source": d.metadata.get("source"),
+            # "title": d.metadata.get("title"),
+        }
+    return splits
+
+def _get_embeddings() -> HuggingFaceEmbeddings:
+    """Create the embedding model."""
+    return HuggingFaceEmbeddings(
+        model_name=EMBED_MODEL_ID,
         encode_kwargs={"normalize_embeddings": True},
     )
 
-    # Step 2. Initialize Chroma vector store
-    vector_store = Chroma(
-        collection_name=collection,
+def _get_vector_store(embeddings: HuggingFaceEmbeddings) -> Chroma:
+    """Open (or create) a Chroma collection on disk."""
+    return Chroma(
+        collection_name=COLLECTION,
         embedding_function=embeddings,
-        persist_directory=chroma_dir,
+        persist_directory=CHROMA_DIR,
     )
 
-    # Step 3. Load document
-    loader = WebBaseLoader(
-        web_paths=("https://lilianweng.github.io/posts/2023-06-23-agent/",),
-        header_template={"User-Agent": user_agent},
-        bs_kwargs=dict(
-            parse_only=bs4.SoupStrainer(
-                class_=("post-content", "post-title", "post-header")
-            )
-        ),
-    )
-    docs = loader.load()
-    assert len(docs) == 1, f"Expected one document, got {len(docs)}"
-    print(f"✅ Loaded document — {len(docs[0].page_content)} characters")
+# -------------------- PUBLIC API --------------------
+def build_index() -> tuple[Chroma, list[Document], list[Document]]:
 
-    # Step 4. Chunk document
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000, chunk_overlap=200, add_start_index=True
-    )
-    all_splits = text_splitter.split_documents(docs)
-    print(f"✅ Split into {len(all_splits)} chunks")
+    """
+    Build (or load) the vector index and return:
+      (vector_store, splits, docs)
 
-    # Step 5. Enrich metadata
-    for i, d in enumerate(all_splits):
-        d.metadata = {
-            **d.metadata,
-            "chunk_index": i,
-            "char_start": d.metadata.get("start_index", None),
-            "collection": collection,
-        }
+    Why return all three?
+      - vector_store: use this to run similarity search (semantic search).
+      - splits: lets you validate chunking (count, preview) without hitting the store.
+      - docs: lets you validate original document stats (character count, etc.).
 
-    # Step 6. Prevent duplicate ingestion
-    existing = 0
+    Idempotence:
+      - If the Chroma collection already has vectors, we skip re-ingest, but still
+        load + split the source so you can validate state consistently.
+    """
+    print("🚀 Starting index build/load...")
+    embeddings   = _get_embeddings()
+    vector_store = _get_vector_store(embeddings)
+
+    # Check whether vectors already exist
     try:
         existing = len(vector_store.get()["ids"])
     except Exception:
-        pass
+        existing = 0
+
+    # Always load and split for validation, but only ingest if empty
+    docs   = _load_docs()
+    splits = _split_docs(docs)
 
     if existing == 0:
-        vector_store.add_documents(all_splits)
-        vector_store.persist()
-        print(f"✅ Added {len(all_splits)} chunks to vector store")
+        vector_store.add_documents(splits)
+        vector_store.persist()  # persist once after ingest
+        print(f"✅ Loaded document — {len(docs[0].page_content)} characters")
+        print(f"✅ Split into {len(splits)} chunks")
+        print(f"✅ Added {len(splits)} chunks to vector store and persisted to disk")
     else:
         print(f"⚠️ Skipped re-ingest — {existing} vectors already present")
+        print(f"✅ Loaded document — {len(docs[0].page_content)} characters")
+        print(f"✅ (Re)split into {len(splits)} chunks for validation (no store writes)")
 
-    # Step 7. Return handle for downstream use
-    print("🏁 Index build complete.")
-    return vector_store, all_splits, docs
-
-
-# ------------------------------------------------------------
-# RETRIEVAL TOOL
-# ------------------------------------------------------------
-@tool(response_format="content_and_artifact")
-def retrieve_context(query: str):
-    """Retrieve information to help answer a query."""
-    vs, *_ = build_index()
-    retrieved_docs = vs.similarity_search(query, k=2)
-    serialized = "\n\n".join(
-        (f"Source: {doc.metadata}\nContent: {doc.page_content}")
-        for doc in retrieved_docs
-    )
-    return serialized, retrieved_docs
-
-
-# ------------------------------------------------------------
-# MAIN GUARD
-# ------------------------------------------------------------
-if __name__ == "__main__":
-    vector_store, all_splits, docs = build_index()
-    print("\n🔍 Sample retrieval test:")
-    query = "What is Task Decomposition?"
-    results = vector_store.similarity_search(query, k=2)
-    for i, doc in enumerate(results):
-        print(f"\nResult {i+1}:\n{doc.page_content[:300]}...")
+    print("🏁 Index build/load complete.")
+    return vector_store, splits, docs
