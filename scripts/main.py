@@ -118,7 +118,7 @@ def _make_bedrock_llm():
     Initialize a Bedrock chat model via langchain-aws.
 
     Environment vars used:
-        BEDROCK_MODEL        default "anthropic.claude-haiku-4-5-20251001-v1:0"
+        BEDROCK_MODEL        default "global.anthropic.claude-haiku-4-5-20251001-v1:0"
         BEDROCK_REGION       (or AWS_REGION / AWS_DEFAULT_REGION)
         BEDROCK_TEMPERATURE  default "0.0"
 
@@ -137,7 +137,7 @@ def _make_bedrock_llm():
         ) from e
 
     # Use the regional model id (not the 'global.' prefix)
-    model_id = os.getenv("BEDROCK_MODEL", "anthropic.claude-haiku-4-5-20251001-v1:0")
+    model_id = os.getenv("BEDROCK_MODEL", "global.anthropic.claude-haiku-4-5-20251001-v1:0")
     region   = _resolve_region()
     temperature = float(os.getenv("BEDROCK_TEMPERATURE", "0.0"))
     return ChatBedrock(model_id=model_id, region_name=region, temperature=temperature)
