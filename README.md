@@ -13,8 +13,8 @@ RAGAgent evolves from a simple semantic search indexer into a full RAG workflow 
 ### System Components
 
 1. **Indexer** — Loads, chunks, embeds, and persists documents locally using Chroma.  
-2. **Validator** — Verifies data integrity and semantic search performance.  
-3. **RAG Engine** — Retrieves relevant chunks and synthesizes an answer using an LLM.
+2. **RAG Engine** — Retrieves relevant chunks and synthesizes an answer using an LLM.
+3. **Main Interface** — Verifies data integrity and semantic search performance; runs RAG engine.
 
 ### RAG Flow Diagram
 

@@ -86,6 +86,86 @@ def _get_vector_store(embeddings: HuggingFaceEmbeddings) -> Chroma:
     )
 
 # -------------------- PUBLIC API --------------------
+# --- connect-only (no ingest) ---
+def get_vector_store() -> Chroma:
+    """Return a Chroma handle pointed at the persisted collection only."""
+    embeddings = _get_embeddings()
+    return _get_vector_store(embeddings)
+
+# --- explicit ingest ---
+def ingest_index(force: bool = False) -> tuple[int, int]:
+    """
+    Ingest (or re-ingest) the source into Chroma.
+    Returns: (num_chunks_added, total_vectors_after)
+
+    - If 'force' is False and vectors already exist, does nothing.
+    - If 'force' is True, clears the collection and re-ingests.
+    """
+    print("🧩 Ingest: starting…")
+    embeddings   = _get_embeddings()
+    vector_store = _get_vector_store(embeddings)
+
+    existing = 0
+    try:
+        existing = len(vector_store.get()["ids"])
+    except Exception:
+        existing = 0
+
+    if existing > 0 and not force:
+        print(f"⚠️  Collection already has {existing} vectors — skipping (use --force to rebuild).")
+        return (0, existing)
+
+    # If force, wipe the collection
+    if existing > 0 and force:
+        print(f"♻️  Force rebuild requested — deleting {existing} existing vectors.")
+        vector_store.delete(ids=vector_store.get()["ids"])
+
+    # Load + split
+    docs   = _load_docs()
+    splits = _split_docs(docs)
+
+    # Ingest
+    vector_store.add_documents(splits)
+    #vector_store.persist()
+
+    total = len(vector_store.get()["ids"])
+    # Step 1: basic validation
+    assert len(docs) == 1, f"Expected one document, got {len(docs)}"
+    print(f"✅ Total characters in source: {len(docs[0].page_content)}")
+
+    # Step 2: chunk check
+    print(f"✅ Ingested {len(splits)} chunks. Total vectors now: {total}.")
+    print(f"✅ Example chunk preview:\n{splits[0].page_content[:400]}...\n")
+    
+    return (len(splits), total)
+
+# --- validate using persisted store; no network fetch/split ---
+def validate_from_store(sample_query: str = "What is Task Decomposition?", k: int = 2) -> None:
+    """
+    Validate the on-disk collection without reloading the source URL:
+      - prints vector count
+      - shows a sample chunk from store via similarity search
+    """
+    vs = get_vector_store()
+    # check persistence
+    try:
+        count = len(vs.get()["ids"])
+    except Exception as e:
+        count = 0
+        print(f"⚠️  Could not read vector store: {e}")
+
+    print(f"✅ Vector store has {count} embeddings in collection '{COLLECTION}'")
+    if count == 0:
+        print("❌ No vectors present. Run --ingest first.")
+        return
+
+    print(f"\n🔎 Retrieval test for query: '{sample_query}'")
+    results = vs.similarity_search(sample_query, k=k)
+    for i, doc in enumerate(results, 1):
+        print(f"\nResult {i}:")
+        print(f"Source: {doc.metadata}")
+        print(f"Snippet: {doc.page_content[:300]}...")
+
 def build_index() -> tuple[Chroma, list[Document], list[Document]]:
 
     """

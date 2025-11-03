@@ -3,6 +3,45 @@
 
 # 🧩 Changelog
 
+## [v0.2.1] — 2025-11-02 
+###Refactor: Separation of Ingest and Validate
+
+This milestone refactor introduces a cleaner project architecture, splitting document ingestion from validation.  
+It eliminates redundant index rebuilding during RAG runs, improving both clarity and performance.
+
+### 🔧 Key Changes
+- 🧩 **`ingest_index()`**  
+  Handles loading, splitting, embedding, and persisting documents into Chroma.  
+  Optional `--force` flag for rebuilding from scratch.  
+  Added preview output (source length, chunk count, example chunk).
+
+- 🔍 **`validate_from_store()`**  
+  New function for store-only checks.  
+  Runs semantic retrieval tests without fetching or re-splitting the source.  
+  Ideal for quick verification after ingestion.
+
+- 🚫 **RAG no longer rebuilds indexes**  
+  Retrieval runs only load existing Chroma collections (`get_vector_store()`).  
+  Prevents duplicate “Starting index build…” logs.
+
+- 🧠 **Lifecycle Simplified**
+      uv run python scripts/main.py --ingest [--force]
+      uv run python scripts/main.py --validate
+      uv run python scripts/main.py --rag --question "..."
+
+- 🧰 **New CLI Modes**
+  | Flag | Description |
+  |------|--------------|
+  | `--ingest` | Load, split, embed, and persist to Chroma |
+  | `--force` | Force rebuild existing collection |
+  | `--validate` | Validate the existing store only |
+  | `--rag` | Run RAG (Retrieve → Augment → Generate) |
+  | `--provider` | Choose `openai` or `bedrock` |
+  | `--question` | Set the query for RAG mode |
+  | `--k` | Optional override for retrieval depth (default: 3) |
+
+---
+
 ## [v0.2.0] — 2025-10-30
 ### Added
 - Full Retrieval-Augmented Generation (RAG) implementation using LangChain’s `Runnable` graph.
@@ -53,3 +92,14 @@
 ### Notes
 - Established foundational structure for future RAG implementation.
 - Introduced `.env` configuration and idempotent indexing logic.
+
+# 🧩 Version Summary
+
+| Version | Highlights |
+|----------|-------------|
+| **v0.2.1** | Refactor: ingestion and validation separated; RAG now attach-only. |
+| **v0.2.0** | Initial RAG pipeline (Retrieve → Augment → Generate). |
+| **v0.1.1** | CLI refactor; added flags and LLM provider factory. |
+| **v0.1.0** | Initial indexer and semantic search demo. |
+
+---

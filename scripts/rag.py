@@ -5,18 +5,16 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 
-from indexer import build_index  # returns (vector_store, splits, docs)
+from indexer import get_vector_store  # returns (vector_store, splits, docs)
 
 # 1) Build / load once, keep store and docs available if needed
 _VECTORSTORE = None
-_SPLITS = None
-_DOCS = None
 
 # A simple process-local lock to make first-time initialization thread-safe.
 # This is enough for CLI runs and typical single-process servers.
 _STORE_LOCK = threading.Lock()
 
-# Default k, but allow override at runtime
+# Default k, can be overridden
 DEFAULT_K = 3
 
 # 2) Prompt for the GENERATION step (RAG = Retrieve → Augment → Generate)
@@ -35,23 +33,29 @@ PROMPT = ChatPromptTemplate.from_messages([("system", SYSTEM), ("user", USER)])
 def _ensure_store() -> None:
     """
     Ensure the vector store (and companion splits/docs) is built exactly once.
-
-    Why:
-      - Avoids heavy work at import time (cleaner, safer).
-      - Safe for concurrent access (double-checked lock).
-      - Keeps validate mode fast; RAG builds only when needed.
+    Load the persisted vector store once (no ingest, no network).
 
     Concurrency:
       - Uses a process-local threading.Lock to guard the first build.
       - Double-check pattern prevents needless locking after initialization.
     """
-    global _VECTORSTORE, _SPLITS, _DOCS
+    global _VECTORSTORE
     if _VECTORSTORE is not None:       # fast path (already initialized)
         return
     with _STORE_LOCK:                   # only the first caller enters
         if _VECTORSTORE is None:        # second check in case another thread won the race
-            _VECTORSTORE, _SPLITS, _DOCS = build_index()
-
+            vs = get_vector_store()
+            # sanity: ensure it actually has vectors
+            try:
+                count = len(vs.get()["ids"])
+            except Exception:
+                count = 0
+            if count == 0:
+                raise RuntimeError(
+                    "Vector store is empty. Run the ingest step first:\n"
+                    "  uv run python scripts/main.py --ingest"
+                )
+            _VECTORSTORE = vs
 
 def _format_context(docs: Sequence) -> str:
     """

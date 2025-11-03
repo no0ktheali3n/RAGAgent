@@ -34,10 +34,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Indexing/validation utilities
-from indexer import build_index, COLLECTION
-
-# RAG chain helper (Retrieve → Augment → Generate)
-from rag import rag_answer
+from indexer import ingest_index, validate_from_store, COLLECTION
 
 # -------------------- LLM FACTORY --------------------
 # scripts/main.py
@@ -169,46 +166,20 @@ def _make_llm(provider: str | None = None):
     raise ValueError("Unknown provider. Use 'openai' or 'bedrock'.")
 
 
-# -------------------- VALIDATION MODE --------------------
+# -------------------- INGEST/VALIDATION MODE --------------------
+def run_ingest(force: bool):
+    ingest_index(force=force)
+
 def run_validate():
-    """
-    Validates ingestion, chunking, persistence, and runs a quick semantic search.
-    Mirrors previous validation flow with the refactored indexer.
-    """
-    # builds vector store, splits and docs index
-    vs, splits, docs = build_index()
-
-    # Step 1: basic validation
-    assert len(docs) == 1, f"Expected one document, got {len(docs)}"
-    print(f"✅ Total characters in source: {len(docs[0].page_content)}")
-
-    # Step 2: chunk check
-    print(f"✅ Total chunks created: {len(splits)}")
-    print(f"✅ Example chunk preview:\n{splits[0].page_content[:400]}...\n")
-
-    # Step 3: check persistence
-    try:
-        count = len(vs.get()["ids"])
-        print(f"✅ Vector store currently holds {count} embeddings in collection '{COLLECTION}'")
-    except Exception as e:
-        print(f"⚠️ Could not fetch vector count: {e}")
-
-    # Step 4: quick retrieval test (semantic search only; no LLM generation)
-    query = "What is Task Decomposition?"
-    results = vs.similarity_search(query, k=2)
-    print(f"\n🔎 Retrieval test for query: '{query}'")
-    for i, doc in enumerate(results, start=1):
-        print(f"\nResult {i}:")
-        print(f"Source: {doc.metadata}")
-        print(f"Snippet: {doc.page_content[:300]}...")
-
-    print("\n✅ Index test completed.")
+    validate_from_store()  # uses store only; no network
 
 # -------------------- RAG MODE --------------------
 def run_rag(question: str, provider: str | None, k: int | None):
     """
     Executes the RAG chain (Retrieve → Augment → Generate) with an LLM.
     """
+    from rag import rag_answer
+
     # Build the model (OpenAI or Bedrock)
     llm = _make_llm(provider)
     print(f"\nQ: {question}\n")
@@ -217,12 +188,16 @@ def run_rag(question: str, provider: str | None, k: int | None):
 
 # -------------------- CLI --------------------
 def parse_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="RAGAgent Tutorial CLI")
+    parser = argparse.ArgumentParser(description="RAGAgent CLI")
     mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--ingest", action="store_true", 
+                        help="Load/split/embed and persist vectors.")
     mode.add_argument("--validate", action="store_true",
-                      help="Validate ingestion/chunking/persistence + semantic search.")
+                        help="Validate ingestion/chunking/persistence + semantic search.")
     mode.add_argument("--rag", action="store_true",
-                      help="Run RAG (Retrieve → Augment → Generate) for a question.")
+                        help="Run (Retrieve → Augment → Generate) for a question (requires ingested store).")
+    parser.add_argument("--force", action="store_true", 
+                        help="With --ingest, rebuild vectors from scratch.")
     parser.add_argument("--question", type=str, default="What is Task Decomposition?",
                         help="Question to ask in RAG mode.")
     parser.add_argument("--provider", type=str, choices=["openai", "bedrock"],
@@ -233,13 +208,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def main():
     args = parse_args(sys.argv[1:])
-
-    if args.validate:
-        run_validate()
+    if args.ingest:
+        run_ingest(force=args.force) 
         return
-
+    if args.validate:
+        run_validate() 
+        return
     if args.rag:
-        # default k value is 3 set in rag.py
         run_rag(question=args.question, provider=args.provider, k=args.k)
         return
 
